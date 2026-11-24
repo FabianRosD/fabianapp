@@ -1,7 +1,7 @@
 /* FabianApp — libreta de campo geológica (PWA). Todo se guarda en el teléfono (IndexedDB). */
 'use strict';
 {
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -17,14 +17,14 @@ const DB = {
   db: null,
   open() {
     return new Promise((res, rej) => {
-      const r = indexedDB.open('fabianapp', 1);
+      const r = indexedDB.open('fabianapp', 2);
       r.onupgradeneeded = () => {
-        const db = r.result;
-        db.createObjectStore('projects', { keyPath: 'id' });
-        const it = db.createObjectStore('items', { keyPath: 'id' });
-        it.createIndex('projectId', 'projectId');
-        db.createObjectStore('photos', { keyPath: 'id' });
-        db.createObjectStore('kv');
+        const db = r.result, has = n => db.objectStoreNames.contains(n);
+        if (!has('projects')) db.createObjectStore('projects', { keyPath: 'id' });
+        if (!has('items')) { const it = db.createObjectStore('items', { keyPath: 'id' }); it.createIndex('projectId', 'projectId'); }
+        if (!has('photos')) db.createObjectStore('photos', { keyPath: 'id' });
+        if (!has('kv')) db.createObjectStore('kv');
+        if (!has('rasters')) db.createObjectStore('rasters', { keyPath: 'id' });
       };
       r.onsuccess = () => { this.db = r.result; res(); };
       r.onerror = () => rej(r.error);
@@ -189,6 +189,8 @@ const BASES = [
 ];
 const map = L.map('map', { zoomControl: false, maxZoom: 21, attributionControl: true, tap: false }).setView([10.77, -73.0], 12);
 L.control.scale({ imperial: false, position: 'topleft' }).addTo(map);
+map.createPane('rasterPane').style.zIndex = 350;
+const canvasR = L.canvas({ padding: 0.5 });
 let baseLayer = null;
 function setBase(id) {
   if (baseLayer) map.removeLayer(baseLayer); baseLayer = null;
@@ -232,14 +234,17 @@ function renderMapData() {
     }
     if (it.type === 'layer' && it.visible && it.geojson) {
       try {
+        const col = it.color || '#6b3fa0';
         G.imp.addLayer(L.geoJSON(it.geojson, {
-          style: { color: '#6b3fa0', weight: 2.5, fillOpacity: .1 },
-          pointToLayer: (f, ll) => L.circleMarker(ll, { radius: 6, color: '#fff', weight: 2, fillColor: '#6b3fa0', fillOpacity: 1 }),
-          onEachFeature: (f, l) => { const p = f.properties || {}; const t = p.name || p.Name || p.nombre || ''; const rows = Object.entries(p).slice(0, 12).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</td></tr>`).join(''); l.bindPopup(`<b>${esc(t)}</b><table style="font-size:12px">${rows}</table><small>${esc(it.name)}</small>`); }
+          renderer: canvasR,
+          style: { color: col, weight: 2.2, fillOpacity: .12, renderer: canvasR },
+          pointToLayer: (f, ll) => L.circleMarker(ll, { renderer: canvasR, radius: 6, color: '#fff', weight: 2, fillColor: col, fillOpacity: 1 }),
+          onEachFeature: (f, l) => { const p = f.properties || {}; const t = p.name || p.Name || p.NAME || p.nombre || p.NOMBRE || p.Nombre || p.ID || p.id || ''; const rows = Object.entries(p).slice(0, 12).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</td></tr>`).join(''); l.bindPopup(`<b>${esc(t)}</b><table style="font-size:12px">${rows}</table><small>${esc(it.name)}</small>`); }
         }));
       } catch (e) { console.warn('capa', e); }
     }
   }
+  renderRasters();
   for (const k of ['st', 'sy', 'tr', 'me']) { const on = S.set.ov[k] !== false; if (on && !map.hasLayer(G[k])) map.addLayer(G[k]); if (!on && map.hasLayer(G[k])) map.removeLayer(G[k]); }
   toggleSymbolsByZoom(z);
 }
@@ -406,7 +411,7 @@ async function loadAll() {
   const act = await DB.get('kv', 'active');
   S.project = S.projects.find(p => p.id === act) || S.projects[0];
   const all = await DB.all('items');
-  S.items = all.filter(i => i.type === 'layer' || i.projectId === S.project.id);
+  S.items = all.filter(i => i.type === 'layer' || i.type === 'raster' || i.projectId === S.project.id);
   $('#stProjName').textContent = S.project.name;
 }
 function newProject(name) { return { id: uid(), name, stPrefix: 'EST-', smPrefix: 'M-', stCount: 0, smCount: 0, created: new Date().toISOString() }; }
@@ -772,15 +777,17 @@ map.on('contextmenu', e => {
 
 /* ---------- Capas y mapas offline ---------- */
 $('#btnLayers').onclick = () => {
-  const imp = S.items.filter(i => i.type === 'layer');
+  const imp = S.items.filter(i => i.type === 'layer'), ras = S.items.filter(i => i.type === 'raster');
   const s = openSheet(`<div class="sheet-head"><h2>Capas</h2><button class="btn ghost small" data-close>Listo</button></div>
   <h3>Mapa base</h3><div class="sublist">${BASES.map(b => `<button class="subitem" data-b="${b.id}"><span class="grow">${esc(b.name)}</span>${S.set.base === b.id ? '<b style="color:var(--cu)">✓</b>' : ''}</button>`).join('')}</div>
   <h3>Mis datos</h3><div class="chips">${[['st', 'Estaciones'], ['sy', 'Símbolos estructurales'], ['tr', 'Tracks'], ['me', 'Mediciones']].map(([k, t]) => `<button class="chip${S.set.ov[k] !== false ? ' on' : ''}" data-ov="${k}">${t}</button>`).join('')}</div>
   <p class="note">Los símbolos de rumbo y buzamiento aparecen desde zoom 14.</p>
-  <h3>Capas importadas</h3><div class="chips">${imp.map(l => `<button class="chip${l.visible ? ' on' : ''}" data-l="${esc(l.id)}">${esc(l.name)}</button>`).join('') || '<span class="note">Importa GeoJSON, KML o GPX desde Más.</span>'}</div>`);
+  <h3>Capas importadas</h3><div class="chips">${imp.map(l => `<button class="chip${l.visible ? ' on' : ''}" data-l="${esc(l.id)}">${esc(l.name)}</button>`).join('') || '<span class="note">Importa shapefiles, KML/KMZ, GPX o GeoJSON desde Más.</span>'}</div>
+  <h3>Mapas PDF e imágenes</h3><div class="sublist">${ras.map(r => `<div class="subitem"><button class="chip${r.visible ? ' on' : ''}" data-l="${esc(r.id)}">${esc(r.name)}</button><input type="range" min="0.1" max="1" step="0.05" value="${r.opacity ?? 0.85}" data-op="${esc(r.id)}" aria-label="Transparencia" style="flex:1;min-height:36px;padding:0"></div>`).join('') || '<span class="note">Importa un PDF georreferenciado o una imagen desde Más.</span>'}</div>`);
   $$('[data-b]', s).forEach(b => b.onclick = () => { setBase(b.dataset.b); $('#btnLayers').onclick(); });
   $$('[data-ov]', s).forEach(b => b.onclick = () => { b.classList.toggle('on'); S.set.ov[b.dataset.ov] = b.classList.contains('on'); saveSettings(); renderMapData(); });
   $$('[data-l]', s).forEach(b => b.onclick = async () => { const l = S.items.find(i => i.id === b.dataset.l); l.visible = !l.visible; b.classList.toggle('on', l.visible); await saveItem(l); });
+  $$('[data-op]', s).forEach(r => { r.oninput = () => { const l = rasterLayers.get(r.dataset.op); if (l) l.setOpacity(+r.value); }; r.onchange = async () => { const it = S.items.find(i => i.id === r.dataset.op); it.opacity = +r.value; await saveItem(it); }; });
 };
 function tileList(b, bounds, z0, z1) {
   const out = [];
@@ -829,20 +836,328 @@ function gpxToGeo(txt) {
   for (const r of x.getElementsByTagName('rte')) fs.push({ type: 'Feature', properties: { name: r.getElementsByTagName('name')[0]?.textContent || 'ruta' }, geometry: { type: 'LineString', coordinates: [...r.getElementsByTagName('rtept')].map(pt) } });
   return { type: 'FeatureCollection', features: fs };
 }
-$('#fileImport').onchange = async e => {
-  const f = e.target.files[0]; if (!f) return; const txt = await f.text(), ext = f.name.split('.').pop().toLowerCase();
+/* ---------- Importar: Shapefile, KML/KMZ, GPX, GeoJSON, PDF georreferenciado, imágenes ---------- */
+const LCOLORS = ['#6b3fa0', '#0b7a75', '#c2185b', '#1d4f91', '#8a6d00', '#2e7d32', '#d84315'];
+const nextColor = () => LCOLORS[S.items.filter(i => i.type === 'layer').length % LCOLORS.length];
+const BOG_DATUM = '+proj=longlat +ellps=intl +towgs84=307,304,-318,0,0,0,0 +no_defs';
+
+async function inflate(u8, fmt) {
+  const out = await new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream(fmt))).arrayBuffer();
+  return new Uint8Array(out);
+}
+async function unzip(u8) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength); let e = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) if (dv.getUint32(i, true) === 0x06054b50) { e = i; break; }
+  if (e < 0) throw new Error('ZIP inválido');
+  const n = dv.getUint16(e + 10, true), td = new TextDecoder(), out = {}; let p = dv.getUint32(e + 16, true);
+  for (let k = 0; k < n; k++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true), nl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true), lo = dv.getUint32(p + 42, true);
+    const name = td.decode(u8.subarray(p + 46, p + 46 + nl)); p += 46 + nl + xl + cl;
+    if (name.endsWith('/') || name.includes('__MACOSX')) continue;
+    const ds = lo + 30 + dv.getUint16(lo + 26, true) + dv.getUint16(lo + 28, true), data = u8.subarray(ds, ds + csize);
+    if (method === 0) out[name] = data; else if (method === 8) out[name] = await inflate(data, 'deflate-raw');
+  }
+  return out;
+}
+
+/* Sistemas de coordenadas para datos sin .prj */
+function eachCoord(c, fn) { if (typeof c[0] === 'number') fn(c); else c.forEach(x => eachCoord(x, fn)); }
+function geoms(gj) { const out = []; const walk = g => { if (!g) return; if (g.type === 'FeatureCollection') g.features.forEach(f => walk(f.geometry)); else if (g.type === 'Feature') walk(g.geometry); else if (g.type === 'GeometryCollection') g.geometries.forEach(walk); else if (g.coordinates) out.push(g); }; walk(gj); return out; }
+function gjBBox(gj) { const b = [Infinity, Infinity, -Infinity, -Infinity]; geoms(gj).forEach(g => eachCoord(g.coordinates, c => { b[0] = Math.min(b[0], c[0]); b[1] = Math.min(b[1], c[1]); b[2] = Math.max(b[2], c[0]); b[3] = Math.max(b[3], c[1]); })); return b; }
+const looksGeo = b => isFinite(b[0]) && b[0] >= -180 && b[2] <= 180 && b[1] >= -90 && b[3] <= 90;
+function reprojectGJ(gj, crs, zone) {
+  const fn = crs === 'bogdatum' ? (c => { const p = proj4(BOG_DATUM, 'WGS84', [c[0], c[1]]); c[0] = p[0]; c[1] = p[1]; })
+    : (c => { const [la, lo] = unproj(c[0], c[1], crs, zone); c[0] = lo; c[1] = la; });
+  geoms(gj).forEach(g => eachCoord(g.coordinates, fn)); return gj;
+}
+function guessCrs(b) {
+  const cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
+  if (cx > 4.3e6 && cx < 5.8e6 && cy > 1.0e6 && cy < 3.2e6) return 'ctm12';
+  if (cx > 1.6e5 && cx < 8.4e5) return 'utm';
+  return 'bog';
+}
+function pickCrs(title, b) {
+  return new Promise(res => {
+    const g = guessCrs(b);
+    const s = openSheet(`<div class="sheet-head"><h2>${esc(title)}</h2></div>
+      <p class="sub">El archivo no trae sistema de coordenadas (.prj). Rango de coordenadas: X ${fx(b[0])} a ${fx(b[2])}, Y ${fx(b[1])} a ${fx(b[3])}. ¿En qué sistema está?</p>
+      <label class="f"><span>Sistema</span><select id="pcS">${[['ctm12', 'Origen Nacional CTM12 (EPSG:9377)'], ['bog', 'MAGNA-SIRGAS Bogotá (EPSG:3116)'], ['este', 'MAGNA-SIRGAS Este Central (EPSG:3117)'], ['utm', 'UTM WGS84']].map(([v, t]) => `<option value="${v}"${v === g ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
+      <label class="f" id="pcZw"><span>Zona UTM</span><input id="pcZ" value="18N"></label>
+      <div class="sheet-foot"><button class="btn ghost" id="pcNo">Cancelar</button><button class="btn" id="pcOk">Importar</button></div>`);
+    const sel = $('#pcS', s), zw = $('#pcZw', s); const upd = () => zw.hidden = sel.value !== 'utm'; sel.onchange = upd; upd();
+    $('#pcNo', s).onclick = () => { closeSheet(); res(null); };
+    $('#pcOk', s).onclick = () => { const r = { crs: sel.value, zone: $('#pcZ', s).value }; closeSheet(); res(r); };
+  });
+}
+function fixPrj(prj) {
+  if (prj && /bogota/i.test(prj) && !/magna/i.test(prj) && !/TOWGS84/i.test(prj)) return prj.replace(/(DATUM\[[^\[]*\[[^\]]*\])/i, '$1,TOWGS84[307,304,-318,0,0,0,0]');
+  return prj;
+}
+async function parseShapefile(parts, name) {
+  const td = new TextDecoder();
+  const prj = parts.prj ? fixPrj(td.decode(parts.prj)) : undefined;
+  let gj;
+  try { gj = await shp({ shp: parts.shp, dbf: parts.dbf, cpg: parts.cpg ? td.decode(parts.cpg) : undefined, prj }); }
+  catch (e) { if (!prj) throw e; gj = await shp({ shp: parts.shp, dbf: parts.dbf, cpg: parts.cpg ? td.decode(parts.cpg) : undefined }); gj.__noPrj = true; }
+  const b = gjBBox(gj);
+  if (!looksGeo(b)) { const c = await pickCrs(`Shapefile «${name}»`, b); if (!c) return null; reprojectGJ(gj, c.crs, c.zone); }
+  return gj;
+}
+function groupShp(files) {
+  const sets = {};
+  for (const [n, data] of Object.entries(files)) {
+    const m = n.match(/^(.*)\.(shp|dbf|prj|cpg)$/i); if (!m) continue;
+    (sets[m[1]] ||= {})[m[2].toLowerCase()] = data;
+  }
+  return Object.entries(sets).filter(([, v]) => v.shp);
+}
+async function addVectorLayer(gj, name) {
+  const n = gj.features?.length ?? 1;
+  if (!n) throw new Error('vacío');
+  const l = { id: uid(), type: 'layer', projectId: null, name, visible: true, geojson: gj, color: nextColor(), date: new Date().toISOString() };
+  await saveItem(l); return l;
+}
+function fitItem(l) {
   try {
-    let gj;
-    if (ext === 'json' || ext === 'geojson') { const o = JSON.parse(txt); if (o.app === 'FabianApp') return restoreBackup(o); gj = o; }
-    else if (ext === 'kml') gj = kmlToGeo(txt); else if (ext === 'gpx') gj = gpxToGeo(txt); else throw new Error('formato');
-    if (!gj.features?.length && gj.type !== 'Feature') throw new Error('vacío');
-    const l = { id: uid(), type: 'layer', projectId: null, name: f.name.replace(/\.[^.]+$/, ''), visible: true, geojson: gj, date: new Date().toISOString() };
-    await saveItem(l); renderMore(); showPanel('map');
-    try { map.fitBounds(L.geoJSON(gj).getBounds(), { padding: [30, 30] }); } catch (er) { }
-    toast(`Capa «${l.name}» importada (${gj.features?.length || 1} elementos)`);
-  } catch (er) { console.warn(er); toast('No se pudo leer el archivo (usa GeoJSON en WGS84, KML o GPX)'); }
-  e.target.value = '';
+    if (l.type === 'raster') { const ly = rasterLayers.get(l.id); const pts = [[0, 0], [l.w, 0], [l.w, l.h], [0, l.h]].map(p => affPx2ll(l.aff, p[0], p[1])); map.fitBounds(L.latLngBounds(pts), { padding: [20, 20] }); return ly; }
+    map.fitBounds(L.geoJSON(l.geojson).getBounds(), { padding: [30, 30], maxZoom: 17 });
+  } catch (e) { }
+}
+
+/* ---------- Imágenes georreferenciadas (afín) ---------- */
+function fitAffine(gcps) {
+  // píxel (x,y) -> Web Mercator (X,Y) por mínimos cuadrados
+  const P = gcps.map(g => { const m = L.CRS.EPSG3857.project(L.latLng(g.lat, g.lon)); return { x: g.px, y: g.py, X: m.x, Y: m.y }; });
+  const n = P.length, mx = P.reduce((t, p) => t + p.x, 0) / n, my = P.reduce((t, p) => t + p.y, 0) / n, mX = P.reduce((t, p) => t + p.X, 0) / n, mY = P.reduce((t, p) => t + p.Y, 0) / n;
+  let Sxx = 0, Sxy = 0, Syy = 0, SxX = 0, SyX = 0, SxY = 0, SyY = 0;
+  P.forEach(p => { const x = p.x - mx, y = p.y - my, X = p.X - mX, Y = p.Y - mY; Sxx += x * x; Sxy += x * y; Syy += y * y; SxX += x * X; SyX += y * X; SxY += x * Y; SyY += y * Y; });
+  const det = Sxx * Syy - Sxy * Sxy; if (Math.abs(det) < 1e-9) throw new Error('Puntos alineados: usa puntos repartidos por la imagen');
+  const a = (SxX * Syy - SyX * Sxy) / det, b = (Sxx * SyX - Sxy * SxX) / det, d = (SxY * Syy - SyY * Sxy) / det, e = (Sxx * SyY - Sxy * SxY) / det;
+  const aff = { a, b, c: mX - a * mx - b * my, d, e, f: mY - d * mx - e * my };
+  const k = Math.cos(gcps[0].lat * D2R);
+  const rms = n > 3 ? Math.sqrt(P.reduce((t, p) => t + ((aff.a * p.x + aff.b * p.y + aff.c - p.X) ** 2 + (aff.d * p.x + aff.e * p.y + aff.f - p.Y) ** 2), 0) / n) * k : null;
+  return { aff, rms };
+}
+const affPx2ll = (A, x, y) => L.CRS.EPSG3857.unproject(L.point(A.a * x + A.b * y + A.c, A.d * x + A.e * y + A.f));
+const AffineImage = L.Layer.extend({
+  initialize(url, w, h, aff, opacity) { this._url = url; this._w = w; this._h = h; this._aff = aff; this._op = opacity ?? 0.85; },
+  onAdd(m) {
+    const img = this._img = L.DomUtil.create('img', 'leaflet-image-layer leaflet-zoom-hide');
+    img.src = this._url; img.alt = ''; Object.assign(img.style, { position: 'absolute', left: '0', top: '0', width: this._w + 'px', height: this._h + 'px', maxWidth: 'none', transformOrigin: '0 0', opacity: this._op, pointerEvents: 'none' });
+    m.getPane('rasterPane').appendChild(img); m.on('zoomend viewreset', this._update, this); this._update();
+  },
+  onRemove(m) { L.DomUtil.remove(this._img); m.off('zoomend viewreset', this._update, this); },
+  setOpacity(o) { this._op = o; if (this._img) this._img.style.opacity = o; },
+  _update() {
+    const m = this._map, A = this._aff, p0 = m.latLngToLayerPoint(affPx2ll(A, 0, 0)), p1 = m.latLngToLayerPoint(affPx2ll(A, this._w, 0)), p2 = m.latLngToLayerPoint(affPx2ll(A, 0, this._h));
+    this._img.style.transform = `matrix(${(p1.x - p0.x) / this._w},${(p1.y - p0.y) / this._w},${(p2.x - p0.x) / this._h},${(p2.y - p0.y) / this._h},${p0.x},${p0.y})`;
+  }
+});
+const rasterLayers = new Map(), rasterUrls = new Map();
+async function renderRasters() {
+  const want = S.items.filter(i => i.type === 'raster' && i.visible);
+  for (const [id, l] of rasterLayers) if (!want.some(w => w.id === id)) { map.removeLayer(l); rasterLayers.delete(id); }
+  for (const r of want) {
+    let l = rasterLayers.get(r.id);
+    if (!l) {
+      let u = rasterUrls.get(r.blobId);
+      if (!u) { const rec = await DB.get('rasters', r.blobId); if (!rec) continue; u = URL.createObjectURL(rec.blob); rasterUrls.set(r.blobId, u); }
+      if (rasterLayers.has(r.id) || !S.items.some(i => i.id === r.id && i.visible)) continue;
+      l = new AffineImage(u, r.w, r.h, r.aff, r.opacity); rasterLayers.set(r.id, l); l.addTo(map);
+    }
+    l.setOpacity(r.opacity ?? 0.85);
+  }
+}
+async function canvasBlob(c) {
+  let b = await new Promise(r => c.toBlob(r, 'image/webp', 0.86));
+  if (!b || b.type !== 'image/webp') b = await new Promise(r => c.toBlob(r, 'image/png'));
+  return b;
+}
+async function saveRaster(canvas, name, gcps, src) {
+  const { aff, rms } = fitAffine(gcps), blob = await canvasBlob(canvas), blobId = uid();
+  await DB.put('rasters', { id: blobId, blob });
+  const it = { id: uid(), type: 'raster', projectId: null, name, w: canvas.width, h: canvas.height, gcps, aff, rms, src, blobId, visible: true, opacity: 0.85, date: new Date().toISOString() };
+  await saveItem(it); return it;
+}
+
+/* ---------- PDF georreferenciado (ISO 32000 / Adobe geospatial) ---------- */
+let pdfjsReady = null;
+function loadPdfJs() {
+  if (pdfjsReady) return pdfjsReady;
+  pdfjsReady = new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'vendor/pdfjs/pdf.min.js'; s.onload = () => { pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdfjs/pdf.worker.min.js'; res(pdfjsLib); }; s.onerror = () => { pdfjsReady = null; rej(new Error('No se pudo cargar el lector de PDF')); }; document.head.append(s); });
+  return pdfjsReady;
+}
+const latin1 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return s; };
+const numsIn = s => (s.match(/[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g) || []).map(Number);
+function arrAt(t, i) { const a = t.indexOf('[', i), b = t.indexOf(']', a); return a < 0 || b < 0 ? null : numsIn(t.slice(a + 1, b)); }
+function nearest(t, key, pos) { let best = -1, i = -1; while ((i = t.indexOf(key, i + 1)) >= 0) if (best < 0 || Math.abs(i - pos) < Math.abs(best - pos)) best = i; return best; }
+async function pdfObjects(raw, u8) {
+  const objs = new Map(), re = /(\d+)\s+(\d+)\s+obj\b/g; let m;
+  while ((m = re.exec(raw))) {
+    const st = m.index + m[0].length; let en = raw.indexOf('endobj', st); if (en < 0) en = raw.length;
+    const s = raw.slice(st, Math.min(en, st + 200000)), k = s.search(/\bstream\r?\n/);
+    objs.set(+m[1], { text: k >= 0 ? s.slice(0, k) : s, streamAt: k >= 0 ? st + k : -1 });
+    re.lastIndex = en;
+  }
+  for (const [, o] of [...objs]) {
+    if (!/\/Type\s*\/ObjStm/.test(o.text) || o.streamAt < 0) continue;
+    try {
+      let lm = o.text.match(/\/Length\s+(\d+)(\s+\d+\s+R)?/), len = lm ? +lm[1] : 0;
+      if (lm && lm[2]) len = +(objs.get(+lm[1])?.text.trim().match(/^\d+/)?.[0] || 0);
+      let ds = o.streamAt + 6; if (raw[ds] === '\r') ds++; if (raw[ds] === '\n') ds++;
+      if (!len) { len = raw.indexOf('endstream', ds) - ds; }
+      let data = u8.subarray(ds, ds + len);
+      if (/FlateDecode/.test(o.text)) data = await inflate(data, 'deflate');
+      const t = latin1(data), N = +o.text.match(/\/N\s+(\d+)/)[1], F = +o.text.match(/\/First\s+(\d+)/)[1], hdr = numsIn(t.slice(0, F));
+      for (let i = 0; i < N; i++) { const off = F + hdr[2 * i + 1], end = i + 1 < N ? F + hdr[2 * i + 3] : t.length; if (!objs.has(hdr[2 * i])) objs.set(hdr[2 * i], { text: t.slice(off, end), streamAt: -1 }); }
+    } catch (e) { console.warn('ObjStm', e); }
+  }
+  return objs;
+}
+async function findPdfGeo(u8) {
+  const raw = latin1(u8);
+  if (!/\/GPTS/.test(raw) && !/\/ObjStm/.test(raw)) return { none: true, lgi: /\/LGIDict/.test(raw) };
+  const objs = await pdfObjects(raw, u8), found = [];
+  for (const [num, o] of objs) {
+    const t = o.text; let i = -1;
+    while ((i = t.indexOf('/GPTS', i + 1)) >= 0) {
+      const gpts = arrAt(t, i), li = nearest(t, '/LPTS', i), lpts = li >= 0 ? arrAt(t, li) : null;
+      if (!gpts || gpts.length < 6) continue;
+      const bi = nearest(t, '/Bounds', i), bounds = bi >= 0 && Math.abs(bi - i) < 4000 ? arrAt(t, bi) : null;
+      let gcs = ''; const gm = t.slice(Math.max(0, i - 4000), i + 4000).match(/\/GCS\s+(\d+)\s+\d+\s+R/); if (gm) gcs = objs.get(+gm[1])?.text || ''; else { const gi = nearest(t, '/GCS', i); if (gi >= 0) gcs = t.slice(gi, gi + 3000); }
+      let bbox = null;
+      const bxi = nearest(t, '/BBox', i);
+      if (bxi >= 0 && /\/Measure\s*<</.test(t)) bbox = arrAt(t, bxi);
+      if (!bbox) for (const [, o2] of objs) { const mm = o2.text.search(new RegExp(`/Measure\\s+${num}\\s+\\d+\\s+R`)); if (mm >= 0) { const b2 = nearest(o2.text, '/BBox', mm); if (b2 >= 0) { bbox = arrAt(o2.text, b2); break; } } }
+      if (!bbox) continue;
+      found.push({ gpts, lpts: lpts && lpts.length === gpts.length ? lpts : null, bounds, gcs, bbox, area: Math.abs((bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) });
+    }
+  }
+  if (!found.length) return { none: true, lgi: /\/LGIDict/.test(raw) };
+  found.sort((a, b) => b.area - a.area); return found[0];
+}
+async function renderPdfPage(u8) {
+  const lib = await loadPdfJs();
+  const doc = await lib.getDocument({ data: u8.slice(), isEvalSupported: false, disableFontFace: false }).promise;
+  const page = await doc.getPage(1), v1 = page.getViewport({ scale: 1 });
+  const scale = Math.min(4096 / Math.max(v1.width, v1.height), Math.sqrt(14e6 / (v1.width * v1.height)), 6);
+  const vp = page.getViewport({ scale }), c = document.createElement('canvas'); c.width = Math.floor(vp.width); c.height = Math.floor(vp.height);
+  const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  return { canvas: c, vp, pages: doc.numPages };
+}
+async function importPdf(file) {
+  toast('Leyendo PDF…', null, null, 20000);
+  const u8 = new Uint8Array(await file.arrayBuffer()), name = file.name.replace(/\.[^.]+$/, '');
+  const geo = await findPdfGeo(u8);
+  toast('Dibujando el mapa del PDF…', null, null, 30000);
+  const { canvas, vp, pages } = await renderPdfPage(u8);
+  $('#toast').hidden = true;
+  if (geo.none) {
+    const ok = await dialog({ title: 'PDF sin georreferencia', text: geo.lgi ? 'Este PDF usa el formato GeoPDF antiguo (TerraGo/OGC), que la app no lee. Puedes reexportarlo desde QGIS o ArcGIS como PDF geoespacial (ISO 32000), o georreferenciarlo a mano con 3 o más puntos conocidos.' : 'No encontré coordenadas dentro del PDF. Puedes georreferenciarlo a mano marcando 3 o más puntos de coordenadas conocidas (cruces de grilla, esquinas de la plancha).', ok: 'Georreferenciar a mano' });
+    if (ok) georefManual(canvas, name); return;
+  }
+  const [x1, y1, x2, y2] = [Math.min(geo.bbox[0], geo.bbox[2]), Math.min(geo.bbox[1], geo.bbox[3]), Math.max(geo.bbox[0], geo.bbox[2]), Math.max(geo.bbox[1], geo.bbox[3])];
+  const toPx = (u, v) => vp.convertToViewportPoint(x1 + u * (x2 - x1), y1 + v * (y2 - y1));
+  const bog = /bogota/i.test(geo.gcs) && !/magna/i.test(geo.gcs) || /\/EPSG\s+(4218|2189\d)\b/.test(geo.gcs);
+  const n = geo.gpts.length / 2, lp = geo.lpts || (geo.bounds && geo.bounds.length === geo.gpts.length ? geo.bounds : null);
+  if (!lp) { toast('El PDF tiene coordenadas pero no sus puntos de referencia (LPTS)'); return; }
+  const gcps = [];
+  for (let k = 0; k < n; k++) {
+    let lat = geo.gpts[2 * k], lon = geo.gpts[2 * k + 1];
+    if (bog) { const p = proj4(BOG_DATUM, 'WGS84', [lon, lat]); lon = p[0]; lat = p[1]; }
+    const [px, py] = toPx(lp[2 * k], lp[2 * k + 1]); gcps.push({ px, py, lat, lon });
+  }
+  // recorta al marco del mapa (sin leyenda ni márgenes)
+  const poly = geo.bounds && geo.bounds.length >= 6 ? [...Array(geo.bounds.length / 2)].map((_, k) => toPx(geo.bounds[2 * k], geo.bounds[2 * k + 1])) : [toPx(0, 0), toPx(1, 0), toPx(1, 1), toPx(0, 1)];
+  const c2 = document.createElement('canvas'); c2.width = canvas.width; c2.height = canvas.height; const x = c2.getContext('2d');
+  x.beginPath(); poly.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1])); x.closePath(); x.clip(); x.drawImage(canvas, 0, 0);
+  const it = await saveRaster(c2, name, gcps, 'GeoPDF');
+  showPanel('map'); fitItem(it);
+  toast(`Mapa «${name}» cargado${bog ? ' (convertido de Datum Bogotá a MAGNA/WGS84)' : ''}${pages > 1 ? ` · se usó la página 1 de ${pages}` : ''}`, null, null, 6000);
+}
+async function importImage(file) {
+  let src; try { src = await createImageBitmap(file); } catch (e) { toast('No se pudo abrir la imagen'); return; }
+  const k = Math.min(1, 4096 / Math.max(src.width, src.height)), c = document.createElement('canvas'); c.width = Math.round(src.width * k); c.height = Math.round(src.height * k);
+  c.getContext('2d').drawImage(src, 0, 0, c.width, c.height); georefManual(c, file.name.replace(/\.[^.]+$/, ''));
+}
+
+/* Georreferenciación manual con puntos de control */
+function georefManual(canvas, name) {
+  const url = canvas.toDataURL('image/jpeg', 0.8), pts = []; let zoom = 1, pending = null;
+  const s = openSheet(`<div class="sheet-head"><div><h2>Georreferenciar «${esc(name)}»</h2><p class="sub">Toca un punto de coordenadas conocidas en la imagen y escribe sus coordenadas. Mínimo 3 puntos, lo más separados posible.</p></div><button class="btn ghost small" data-close>Cancelar</button></div>
+    <div class="row gap" style="margin:6px 0"><button class="btn small ghost" id="grOut">−</button><button class="btn small ghost" id="grIn">+</button><span class="sub" id="grZ">100%</span></div>
+    <div id="grBox" style="position:relative;overflow:auto;max-height:46vh;border:1px solid var(--line);border-radius:12px;background:#fff;touch-action:pan-x pan-y"><div id="grIn2" style="position:relative;width:100%"><img id="grImg" src="${url}" style="width:100%;display:block" alt="Imagen a georreferenciar"><div id="grDots"></div></div></div>
+    <div class="card" id="grForm" hidden style="margin-top:10px"><b id="grPx">Punto</b>
+      <label class="f"><span>Sistema</span><select id="grC">${[['ctm12', 'Origen Nacional CTM12'], ['geo', 'Geográficas WGS84 (lat, lon)'], ['utm', 'UTM WGS84'], ['bog', 'MAGNA Bogotá'], ['este', 'MAGNA Este Central']].map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select></label>
+      <div class="grid3"><label class="f"><span id="grLA">Este (m)</span><input id="grA" inputmode="decimal"></label><label class="f"><span id="grLB">Norte (m)</span><input id="grB" inputmode="decimal"></label><label class="f" id="grZw" hidden><span>Zona</span><input id="grZn" value="18N"></label></div>
+      <div class="btns"><button class="btn small" id="grAdd">Agregar punto</button><button class="btn small ghost" id="grGps">Usar mi posición GPS</button></div></div>
+    <div class="sublist" id="grList" style="margin-top:10px"></div>
+    <p class="note" id="grRms"></p>
+    <div class="sheet-foot"><button class="btn ghost" data-close>Cancelar</button><button class="btn" id="grSave" disabled>Guardar capa</button></div>`);
+  const img = $('#grImg', s), sel = $('#grC', s);
+  const labels = () => { const g = sel.value === 'geo'; $('#grLA', s).textContent = g ? 'Latitud' : 'Este (m)'; $('#grLB', s).textContent = g ? 'Longitud' : 'Norte (m)'; $('#grZw', s).hidden = sel.value !== 'utm'; };
+  sel.value = ['dd', 'dms'].includes(S.set.crs) ? 'geo' : S.set.crs; labels(); sel.onchange = labels;
+  const setZoom = z => { zoom = Math.max(1, Math.min(8, z)); $('#grIn2', s).style.width = zoom * 100 + '%'; $('#grZ', s).textContent = Math.round(zoom * 100) + '%'; dots(); };
+  $('#grIn', s).onclick = () => setZoom(zoom * 1.6); $('#grOut', s).onclick = () => setZoom(zoom / 1.6);
+  const dots = () => { const k = img.clientWidth / canvas.width; $('#grDots', s).innerHTML = [...pts.map((p, i) => ({ ...p, t: String(i + 1) })), ...(pending ? [{ ...pending, t: '?' }] : [])].map(p => `<div style="position:absolute;left:${p.px * k - 11}px;top:${p.py * k - 11}px;width:22px;height:22px;border-radius:50%;background:${p.t === '?' ? '#e2b440' : '#b25520'};color:#fff;border:2px solid #fff;font:700 12px/18px system-ui;text-align:center;pointer-events:none">${p.t}</div>`).join(''); };
+  img.onclick = e => { const r = img.getBoundingClientRect(), k = canvas.width / r.width; pending = { px: (e.clientX - r.left) * k, py: (e.clientY - r.top) * k }; $('#grForm', s).hidden = false; $('#grPx', s).textContent = `Punto ${pts.length + 1} (píxel ${Math.round(pending.px)}, ${Math.round(pending.py)})`; dots(); $('#grA', s).focus(); };
+  const list = () => {
+    $('#grList', s).innerHTML = pts.map((p, i) => `<div class="subitem"><b>${i + 1}</b><span class="grow">${p.lat.toFixed(6)}, ${p.lon.toFixed(6)}</span><button class="btn small danger" data-del="${i}">Quitar</button></div>`).join('');
+    $$('[data-del]', s).forEach(b => b.onclick = () => { pts.splice(+b.dataset.del, 1); list(); dots(); });
+    $('#grSave', s).disabled = pts.length < 3;
+    try { $('#grRms', s).textContent = pts.length >= 4 ? `Error medio cuadrático: ${fx(fitAffine(pts).rms, 1)} m` : pts.length === 3 ? 'Con 3 puntos la ubicación es exacta pero sin control de error; agrega un 4.º punto para verificar.' : ''; } catch (e) { $('#grRms', s).textContent = e.message; }
+  };
+  $('#grAdd', s).onclick = () => {
+    if (!pending) return; const a = num($('#grA', s).value.replace(',', '.')), b = num($('#grB', s).value.replace(',', '.')); if (a == null || b == null) { toast('Escribe las dos coordenadas'); return; }
+    let lat, lon; try { if (sel.value === 'geo') { lat = a; lon = b; } else [lat, lon] = unproj(a, b, sel.value, $('#grZn', s).value); } catch (e) { toast('Coordenadas inválidas'); return; }
+    pts.push({ ...pending, lat, lon }); pending = null; $('#grForm', s).hidden = true; $('#grA', s).value = ''; $('#grB', s).value = ''; list(); dots();
+  };
+  $('#grGps', s).onclick = () => { if (!S.pos || !pending) { toast('Sin GPS o sin punto marcado'); return; } pts.push({ ...pending, lat: S.pos.lat, lon: S.pos.lon }); pending = null; $('#grForm', s).hidden = true; list(); dots(); };
+  img.onload = dots;
+  $('#grSave', s).onclick = async () => { try { const it = await saveRaster(canvas, name, pts, 'manual'); closeSheet(); showPanel('map'); fitItem(it); toast(`Capa «${name}» guardada`); } catch (e) { toast(e.message); } };
+}
+
+/* Entrada de archivos */
+$('#fileImport').onchange = async e => {
+  const files = [...e.target.files]; e.target.value = ''; if (!files.length) return;
+  const ext = f => f.name.split('.').pop().toLowerCase();
+  try {
+    // shapefile en archivos sueltos (.shp + .dbf + .prj + .cpg)
+    if (files.some(f => ext(f) === 'shp')) {
+      const parts = {}; for (const f of files) if (['shp', 'dbf', 'prj', 'cpg'].includes(ext(f))) parts[f.name] = new Uint8Array(await f.arrayBuffer());
+      if (!files.some(f => ext(f) === 'prj')) toast('Sin .prj: te preguntaré el sistema de coordenadas', null, null, 2500);
+      for (const [nm, set] of groupShp(parts)) { const gj = await parseShapefile(set, nm); if (gj) { const l = await addVectorLayer(gj, nm.split('/').pop()); showPanel('map'); fitItem(l); toast(`Shapefile «${l.name}»: ${gj.features.length} elementos`); } }
+      if (!files.some(f => ext(f) === 'dbf')) toast('Importado sin .dbf: no habrá atributos. Selecciona .shp, .dbf y .prj juntos.', null, null, 6000);
+      return;
+    }
+    for (const f of files) {
+      const x = ext(f), name = f.name.replace(/\.[^.]+$/, '');
+      if (x === 'pdf') { await importPdf(f); continue; }
+      if (['jpg', 'jpeg', 'png', 'webp'].includes(x)) { await importImage(f); continue; }
+      if (x === 'zip' || x === 'kmz') {
+        const z = await unzip(new Uint8Array(await f.arrayBuffer())), sets = groupShp(z);
+        if (sets.length) { for (const [nm, set] of sets) { const gj = await parseShapefile(set, nm); if (gj) { const l = await addVectorLayer(gj, nm.split('/').pop()); fitItem(l); toast(`Shapefile «${l.name}»: ${gj.features.length} elementos`); } } showPanel('map'); continue; }
+        const kmlName = Object.keys(z).find(n => /doc\.kml$/i.test(n)) || Object.keys(z).find(n => /\.kml$/i.test(n));
+        if (kmlName) { const l = await addVectorLayer(kmlToGeo(new TextDecoder().decode(z[kmlName])), name); showPanel('map'); fitItem(l); toast(`«${name}» importado`); continue; }
+        const gjName = Object.keys(z).find(n => /\.(geo)?json$/i.test(n));
+        if (gjName) { const l = await addVectorLayer(JSON.parse(new TextDecoder().decode(z[gjName])), name); showPanel('map'); fitItem(l); continue; }
+        throw new Error('El ZIP no tiene .shp, .kml ni GeoJSON');
+      }
+      const txt = await f.text();
+      if (x === 'json' || x === 'geojson') {
+        const o = JSON.parse(txt); if (o.app === 'FabianApp') { await restoreBackup(o); continue; }
+        const b = gjBBox(o); if (!looksGeo(b)) { const c = await pickCrs(`«${name}»`, b); if (!c) continue; reprojectGJ(o, c.crs, c.zone); }
+        const l = await addVectorLayer(o, name); showPanel('map'); fitItem(l); toast(`«${name}»: ${o.features?.length || 1} elementos`); continue;
+      }
+      if (x === 'kml') { const l = await addVectorLayer(kmlToGeo(txt), name); showPanel('map'); fitItem(l); toast(`«${name}» importado`); continue; }
+      if (x === 'gpx') { const l = await addVectorLayer(gpxToGeo(txt), name); showPanel('map'); fitItem(l); toast(`«${name}» importado`); continue; }
+      toast(`Formato .${x} no soportado`);
+    }
+  } catch (er) { console.warn(er); toast('No se pudo importar: ' + (er.message || 'archivo dañado o formato no soportado'), null, null, 6000); }
 };
+
 
 /* ---------- Exportar ---------- */
 const safe = s => String(s).replace(/[^\w\-áéíóúñÁÉÍÓÚÑ ]+/g, '').trim().replace(/\s+/g, '_') || 'export';
@@ -917,8 +1232,9 @@ async function backup() {
   toast('Preparando respaldo…');
   const projects = await DB.all('projects'), items = await DB.all('items'), photos = [];
   for (const ph of await DB.all('photos')) photos.push({ id: ph.id, stationId: ph.stationId, name: ph.name, data: await blobToData(ph.blob) });
+  const rasters = []; for (const r of await DB.all('rasters')) rasters.push({ id: r.id, data: await blobToData(r.blob) });
   const settings = S.set;
-  deliver(new Blob([JSON.stringify({ app: 'FabianApp', version: VERSION, exported: new Date().toISOString(), projects, items, photos, settings })], { type: 'application/json' }), `FabianApp_respaldo_${stamp()}.json`);
+  deliver(new Blob([JSON.stringify({ app: 'FabianApp', version: VERSION, exported: new Date().toISOString(), projects, items, photos, rasters, settings })], { type: 'application/json' }), `FabianApp_respaldo_${stamp()}.json`);
 }
 async function restoreBackup(o) {
   const ok = await dialog({ title: 'Restaurar respaldo', text: `${o.projects?.length || 0} proyecto(s), ${o.items?.length || 0} elementos y ${o.photos?.length || 0} fotos del ${fmtDate(o.exported)}. Se combinan con lo que ya tienes (lo del respaldo reemplaza elementos iguales).`, ok: 'Restaurar' });
@@ -926,6 +1242,7 @@ async function restoreBackup(o) {
   for (const p of o.projects || []) await DB.put('projects', p);
   for (const i of o.items || []) await DB.put('items', i);
   for (const ph of o.photos || []) { const blob = await (await fetch(ph.data)).blob(); await DB.put('photos', { id: ph.id, stationId: ph.stationId, name: ph.name, blob }); }
+  for (const r of o.rasters || []) { const blob = await (await fetch(r.data)).blob(); await DB.put('rasters', { id: r.id, blob }); }
   await loadAll(); renderMapData(); renderMore(); toast('Respaldo restaurado');
 }
 
@@ -933,7 +1250,7 @@ async function restoreBackup(o) {
 async function renderMore() {
   const p = S.project, sts = stations();
   const nS = sts.reduce((t, s) => t + (s.structs || []).length, 0), nM = sts.reduce((t, s) => t + (s.samples || []).length, 0);
-  const layers = S.items.filter(i => i.type === 'layer');
+  const layers = S.items.filter(i => i.type === 'layer' || i.type === 'raster');
   let est = ''; try { const e = await navigator.storage?.estimate(); if (e) est = `Usado: ${(e.usage / 1048576).toFixed(1)} MB de ${(e.quota / 1073741824).toFixed(1)} GB disponibles.`; } catch (e) { }
   let pers = false; try { pers = await navigator.storage?.persisted?.(); } catch (e) { }
   $('#moreBody').innerHTML = `
@@ -944,8 +1261,8 @@ async function renderMore() {
     <div class="btns"><button class="btn small" id="mNewP">Nuevo proyecto</button><button class="btn small ghost" id="mRenP">Renombrar</button>${S.projects.length > 1 ? '<button class="btn small danger" id="mDelP">Eliminar proyecto</button>' : ''}</div></div>
   <div class="card"><h3>Exportar «${esc(p.name)}»</h3><p class="sub">Coordenadas en WGS84, UTM y CTM12 en cada fila.</p>
     <div class="btns"><button class="btn small" data-x="st">Estaciones CSV</button><button class="btn small" data-x="sy">Estructuras CSV</button><button class="btn small" data-x="sm">Muestras CSV</button><button class="btn small ghost" data-x="kml">KML (Google Earth)</button><button class="btn small ghost" data-x="gj">GeoJSON (ArcGIS/QGIS)</button><button class="btn small ghost" data-x="gpx">GPX</button></div></div>
-  <div class="card"><h3>Capas importadas</h3><p class="sub">GeoJSON (WGS84), KML o GPX: límites del título, polígonos, sondajes, puntos planeados…</p>
-    <div class="sublist">${layers.map(l => `<div class="subitem"><span class="grow">${esc(l.name)}</span><button class="btn small ghost" data-lz="${esc(l.id)}">Ver</button><button class="btn small danger" data-ld="${esc(l.id)}">Quitar</button></div>`).join('') || '<p class="note">Ninguna todavía.</p>'}</div>
+  <div class="card"><h3>Capas importadas</h3><p class="sub">Shapefile (.zip, o .shp + .dbf + .prj juntos), PDF georreferenciado, KML/KMZ, GPX, GeoJSON o una imagen para georreferenciar a mano: planchas, título minero, sondajes, puntos planeados…</p>
+    <div class="sublist">${layers.map(l => `<div class="subitem"><span class="grow">${esc(l.name)}<br><span class="sub">${l.type === 'raster' ? (l.src === 'GeoPDF' ? 'PDF georreferenciado' : 'Georreferenciado a mano') + (l.rms != null ? ` · error ${fx(l.rms, 1)} m` : '') : `${l.geojson?.features?.length ?? 1} elementos`}</span></span><button class="btn small ghost" data-lz="${esc(l.id)}">Ver</button><button class="btn small danger" data-ld="${esc(l.id)}">Quitar</button></div>`).join('') || '<p class="note">Ninguna todavía.</p>'}</div>
     <div class="btns"><button class="btn small" id="mImp">Importar archivo</button></div></div>
   <div class="card"><h3>Respaldo</h3><p class="sub">Todo queda guardado solo en este teléfono. Haz un respaldo al terminar cada salida de campo.</p>
     <div class="btns"><button class="btn small" id="mBak">Crear respaldo completo (con fotos)</button><button class="btn small ghost" id="mRes">Restaurar respaldo</button></div>
@@ -981,9 +1298,9 @@ async function renderMore() {
     if (k === 'gj') deliver(new Blob([geojsonAll()], { type: 'application/geo+json' }), n + '.geojson');
     if (k === 'gpx') deliver(new Blob([gpx(stations(), tracks())], { type: 'application/gpx+xml' }), n + '.gpx');
   });
-  $$('[data-lz]', b).forEach(x => x.onclick = () => { const l = S.items.find(i => i.id === x.dataset.lz); showPanel('map'); try { map.fitBounds(L.geoJSON(l.geojson).getBounds(), { padding: [30, 30] }); } catch (e) { } });
+  $$('[data-lz]', b).forEach(x => x.onclick = () => { const l = S.items.find(i => i.id === x.dataset.lz); showPanel('map'); fitItem(l); });
   $$('[data-ld]', b).forEach(x => x.onclick = () => { const l = S.items.find(i => i.id === x.dataset.ld); removeItem(l, 'Capa'); });
-  $('#mImp', b).onclick = $('#mRes', b).onclick = () => $('#fileImport').click();
+  $('#mImp', b).onclick = $('#mRes', b).onclick = () => { const f = $('#fileImport'); f.value = ''; f.click(); };
   $('#mBak', b).onclick = backup;
   $('#aCrs', b).onchange = e => { S.set.crs = e.target.value; saveSettings(); updateHud(); };
   $('#aFmt', b).onchange = e => { S.set.fmt = e.target.value; saveSettings(); };
@@ -997,7 +1314,7 @@ function applyTheme() { const t = S.set.theme; if (t === 'auto') delete document
 
 /* ---------- Inicio ---------- */
 async function cleanPhotos() {
-  try { const used = new Set(); (await DB.all('items')).forEach(i => (i.photos || []).forEach(p => used.add(p))); for (const k of await DB.keys('photos')) if (!used.has(k)) await DB.del('photos', k); } catch (e) { }
+  try { const items = await DB.all('items'), used = new Set(), ras = new Set(); items.forEach(i => { (i.photos || []).forEach(p => used.add(p)); if (i.blobId) ras.add(i.blobId); }); for (const k of await DB.keys('photos')) if (!used.has(k)) await DB.del('photos', k); for (const k of await DB.keys('rasters')) if (!ras.has(k)) await DB.del('rasters', k); } catch (e) { }
 }
 async function init() {
   try { await DB.open(); } catch (e) { toast('No se pudo abrir el almacenamiento del navegador'); return; }

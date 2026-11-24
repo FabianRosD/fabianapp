@@ -1,4 +1,4 @@
-# FabianApp 1.0 — Libreta de campo geológica
+# FabianApp 1.1 — Libreta de campo geológica
 
 App web instalable (PWA) para exploración: estaciones, datos estructurales medidos con
 la brújula del teléfono, muestras con QA/QC, fotos, tracks GPS y mapas sin señal.
@@ -50,6 +50,20 @@ La app necesita una dirección **https** para que el navegador le dé GPS, brúj
 - **Respaldo**: Más → «Crear respaldo completo». Hazlo al final de cada salida
   y guárdalo en Drive; se restaura con «Restaurar respaldo».
 
+## Importar mapas y capas (Más → Capas importadas → Importar archivo)
+
+- **PDF georreferenciado** (ISO 32000 / «GeoPDF» exportado desde ArcGIS, QGIS, GDAL o Avenza):
+  se ubica solo sobre el mapa, recortado al marco (sin leyenda ni márgenes). Si viene en
+  Datum Bogotá, se convierte a MAGNA/WGS84. Se usa la página 1.
+- **PDF sin georreferencia o imagen (JPG/PNG)**: georreferéncialo a mano tocando 3 o más
+  puntos de coordenadas conocidas (cruces de grilla, esquinas de plancha); con 4 o más
+  te muestra el error medio cuadrático.
+- **Shapefile**: un .zip con .shp, .dbf y .prj, o selecciona esos archivos juntos.
+  Si falta el .prj, la app te pregunta el sistema (CTM12, MAGNA Bogotá/Este Central, UTM).
+- **KML / KMZ, GPX y GeoJSON.**
+
+Desde el botón de capas puedes prender/apagar cada una y ajustar la transparencia de los PDF.
+
 ## Sistemas de coordenadas
 
 - Origen Nacional CTM12 — EPSG:9377 (oficial en Colombia, Resolución IGAC 471 de 2020)
@@ -62,5 +76,5 @@ Ajustes para ver alturas sobre el nivel del mar.
 
 ## Créditos
 
-Leaflet 1.9.4 (BSD-2), proj4js 2.15 (MIT). Teselas: OpenTopoMap, OpenStreetMap y Esri,
+Leaflet 1.9.4 (BSD-2), proj4js 2.15 (MIT), shpjs 6.2 (MIT), PDF.js 3.11 (Apache-2.0). Teselas: OpenTopoMap, OpenStreetMap y Esri,
 con sus atribuciones visibles en el mapa.

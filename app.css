@@ -183,3 +183,5 @@ label.f>span{display:block;font-size:13px;color:var(--mute);margin-bottom:4px}
 .prof text{font-size:11px;fill:var(--mute);stroke:none}
 
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+#sheetWrap:not([hidden]) ~ #toast{top:auto;bottom:calc(20px + var(--sab))}
+input[type=range]{accent-color:var(--cu);border:0;background:none}
