@@ -1,0 +1,19 @@
+{
+  "name": "FabianApp — Libreta de campo geológica",
+  "short_name": "FabianApp",
+  "description": "Estaciones, datos estructurales, muestras, tracks y mapas sin señal para exploración geológica.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1d2327",
+  "theme_color": "#1d2327",
+  "lang": "es-CO",
+  "categories": ["productivity", "utilities", "navigation"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
