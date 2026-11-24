@@ -1,7 +1,7 @@
 /* FabianApp — libreta de campo geológica (PWA). Todo se guarda en el teléfono (IndexedDB). */
 'use strict';
 {
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -1253,7 +1253,7 @@ async function renderMore() {
   const layers = S.items.filter(i => i.type === 'layer' || i.type === 'raster');
   let est = ''; try { const e = await navigator.storage?.estimate(); if (e) est = `Usado: ${(e.usage / 1048576).toFixed(1)} MB de ${(e.quota / 1073741824).toFixed(1)} GB disponibles.`; } catch (e) { }
   let pers = false; try { pers = await navigator.storage?.persisted?.(); } catch (e) { }
-  $('#moreBody').innerHTML = `
+  $('#moreBody').innerHTML = `${installCard()}
   <div class="card"><h3>Proyecto activo: ${esc(p.name)}</h3><p class="sub">${sts.length} estaciones · ${nS} estructuras · ${nM} muestras · ${tracks().length} tracks</p>
     <div class="grid2"><label class="f"><span>Prefijo de estaciones</span><input id="mStP" value="${esc(p.stPrefix)}"></label><label class="f"><span>Prefijo de muestras</span><input id="mSmP" value="${esc(p.smPrefix)}"></label></div>
     <p class="note">Próximos códigos: ${esc(nextCode(p.stPrefix, p.stCount, 3))} y ${esc(nextCode(p.smPrefix, p.smCount, 4))}</p>
@@ -1279,6 +1279,7 @@ async function renderMore() {
   <div class="card"><h3>Acerca de FabianApp ${VERSION}</h3><p class="sub">Libreta de campo geológica para exploración: estaciones, estructuras, muestras y tracks, con mapas sin señal. Hecha para Fabián Andrés Rosado. Tus datos nunca salen del teléfono salvo cuando tú exportas.</p>
     <p class="note">Usa Leaflet (BSD-2), proj4js (MIT) y teselas de OpenTopoMap, OpenStreetMap y Esri, cada una con su atribución en el mapa. Las lecturas de brújula dependen de la calibración del magnetómetro: compara de vez en cuando con tu Brunton.</p></div>`;
   const b = $('#moreBody');
+  const mi = $('#mInst', b); if (mi) mi.onclick = doInstall;
   $('#mStP', b).onchange = async e => { p.stPrefix = e.target.value; await saveProject(); renderMore(); };
   $('#mSmP', b).onchange = async e => { p.smPrefix = e.target.value; await saveProject(); renderMore(); };
   $$('[data-p]', b).forEach(x => x.onclick = async () => { if (x.dataset.p === p.id) return; await DB.put('kv', x.dataset.p, 'active'); await loadAll(); renderMapData(); renderMore(); toast(`Proyecto «${S.project.name}» abierto`); const s = stations().filter(s => s.lat != null); if (s.length) map.fitBounds(L.latLngBounds(s.map(q => [q.lat, q.lon])), { padding: [40, 40], maxZoom: 16 }); });
@@ -1312,6 +1313,73 @@ async function renderMore() {
 }
 function applyTheme() { const t = S.set.theme; if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t; }
 
+
+/* ---------- Instalar en el celular ---------- */
+let installEvt = null, installedHere = false;
+const UA = navigator.userAgent;
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: fullscreen)').matches || navigator.standalone === true;
+const isIOS = /iPhone|iPad|iPod/i.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isAndroid = /Android/i.test(UA);
+const inAppBrowser = /FBAN|FBAV|Instagram|Line\/|WhatsApp|MicroMessenger|; wv\)|GSA\//i.test(UA);
+const isSamsung = /SamsungBrowser/i.test(UA);
+const isFirefox = /Firefox|FxiOS/i.test(UA);
+const isMobile = isIOS || isAndroid;
+const appUrl = () => location.origin + location.pathname.replace(/index\.html$/, '');
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (installedHere) { installedHere = false; DB.put('kv', false, 'installedHere').catch(() => { }); } updateInstallUi(); });
+window.addEventListener('appinstalled', () => { installEvt = null; markInstalled(); toast('FabianApp quedó instalada: búscala en tu pantalla de inicio', null, null, 6000); });
+let installDismissed = false;
+function updateInstallUi() {
+  const show = !isStandalone() && !installDismissed && !installedHere && location.protocol.startsWith('http') && (installEvt || isMobile);
+  $('#installBar').hidden = !show;
+  if (S.panel === 'more') renderMore();
+}
+$('#instBtn').onclick = () => doInstall();
+$('#instX').onclick = () => { installDismissed = true; $('#installBar').hidden = true; DB.put('kv', Date.now(), 'installDismissed').catch(() => { }); toast('Puedes instalarla cuando quieras desde Más', null, null, 3000); };
+async function doInstall() {
+  if (isStandalone()) { toast('Ya estás usando FabianApp instalada'); return; }
+  if (installEvt) {
+    const e = installEvt; installEvt = null;
+    try { await e.prompt(); const r = await e.userChoice; if (r.outcome === 'accepted') { markInstalled(); toast('Instalando FabianApp… ábrela desde el ícono de tu pantalla de inicio', null, null, 6000); } else toast('Instalación cancelada. Puedes hacerlo luego desde Más'); }
+    catch (er) { installHelp(); }
+    updateInstallUi(); return;
+  }
+  installHelp();
+}
+function markInstalled() { installedHere = true; DB.put('kv', true, 'installedHere').catch(() => { }); updateInstallUi(); }
+async function installHelp() {
+  const url = appUrl();
+  let body = '';
+  if (!isMobile) {
+    let qr = '';
+    try { if (!window.qrcode) await new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'vendor/qrcode.js'; s.onload = res; s.onerror = rej; document.head.append(s); }); const q = qrcode(0, 'M'); q.addData(url); q.make(); qr = q.createSvgTag({ cellSize: 6, margin: 2, scalable: true }); } catch (e) { }
+    body = `<p class="sub">Estás en un computador. FabianApp está hecha para el celular (GPS y brújula).</p>
+      ${qr ? `<div class="qr">${qr}</div>` : ''}
+      <ol class="steps"><li>Abre la <b>cámara</b> del celular y apunta a este código.</li><li>Toca el enlace que aparece; se abre en <b>Chrome</b>.</li><li>En el celular toca <b>Instalar</b> en el aviso de FabianApp.</li></ol>`;
+  } else if (inAppBrowser) {
+    body = `<p class="sub">Abriste el enlace dentro de otra app (WhatsApp, Instagram, Facebook…). Desde ahí no se puede instalar.</p>
+      <ol class="steps"><li>Toca <span class="kbd">⋮</span> arriba a la derecha.</li><li>Elige <b>«Abrir en Chrome»</b> (o «Abrir en el navegador»).</li><li>En Chrome, toca <b>Instalar</b> en el aviso de FabianApp.</li></ol>`;
+  } else if (isIOS) {
+    body = `<ol class="steps"><li>Abre esta página en <b>Safari</b>.</li><li>Toca el botón <b>Compartir</b> <span class="kbd">⬆︎</span> (abajo en el centro).</li><li>Baja y toca <b>«Agregar a inicio»</b> → <b>Agregar</b>.</li></ol><p class="note">En iPhone la brújula pide permiso la primera vez que la usas.</p>`;
+  } else if (isSamsung) {
+    body = `<ol class="steps"><li>Toca el menú <span class="kbd">☰</span> abajo a la derecha.</li><li>Elige <b>«Añadir página a»</b> → <b>«Pantalla de inicio»</b>.</li><li>Confirma con <b>Añadir</b>.</li></ol><p class="note">Con Chrome la instalación es más completa: si lo tienes, abre allí este enlace.</p>`;
+  } else if (isFirefox) {
+    body = `<ol class="steps"><li>Toca <span class="kbd">⋮</span>.</li><li>Elige <b>«Instalar»</b> o <b>«Añadir a la pantalla de inicio»</b>.</li></ol>`;
+  } else {
+    body = `<ol class="steps"><li>Toca <span class="kbd">⋮</span> arriba a la derecha de Chrome.</li><li>Elige <b>«Instalar aplicación»</b> o <b>«Agregar a la pantalla principal»</b>.</li><li>Confirma con <b>Instalar</b>.</li></ol>
+      <p class="note">Si no aparece la opción: recarga la página una vez y espera unos segundos. Si ya la instalaste antes, búscala en tus aplicaciones como «FabianApp».</p>`;
+  }
+  const s = openSheet(`<div class="sheet-head"><h2>Instalar FabianApp</h2><button class="btn ghost small" data-close>Cerrar</button></div>${body}
+    <div class="card" style="margin-top:14px"><span class="sub">Dirección de la app</span><div style="overflow-wrap:anywhere;font-weight:600">${esc(url)}</div><div class="btns"><button class="btn small ghost" id="instCopy">Copiar enlace</button>${navigator.share ? '<button class="btn small ghost" id="instShare">Compartir enlace</button>' : ''}</div></div>`);
+  $('#instCopy', s).onclick = async () => { try { await navigator.clipboard.writeText(url); toast('Enlace copiado'); } catch (e) { toast('No se pudo copiar; mantén presionada la dirección'); } };
+  const sh = $('#instShare', s); if (sh) sh.onclick = () => navigator.share({ title: 'FabianApp', url }).catch(() => { });
+}
+function installCard() {
+  if (!location.protocol.startsWith('http')) return '';
+  if (installedHere && !isStandalone() && !installEvt) return `<div class="card"><h3>FabianApp ya está instalada ✓</h3><p class="sub">Ábrela desde el ícono «FabianApp» de tu pantalla de inicio: ahí funciona a pantalla completa y sin señal.</p><div class="btns"><button class="btn small ghost" id="mInst">Ver cómo instalar en otro equipo</button></div></div>`;
+  if (isStandalone()) return `<div class="card"><h3>FabianApp instalada ✓</h3><p class="sub">Estás usando la app instalada. Versión ${VERSION}.</p></div>`;
+  return `<div class="card" style="border:2px solid var(--cu)"><h3>Instalar en este ${isMobile ? 'celular' : 'equipo'}</h3><p class="sub">Queda como una app más: ícono en la pantalla de inicio, pantalla completa y funciona sin señal en campo.</p><div class="btns"><button class="btn" id="mInst">${installEvt ? 'Instalar FabianApp' : isMobile ? 'Cómo instalarla' : 'Abrir en el celular (código QR)'}</button></div></div>`;
+}
+
 /* ---------- Inicio ---------- */
 async function cleanPhotos() {
   try { const items = await DB.all('items'), used = new Set(), ras = new Set(); items.forEach(i => { (i.photos || []).forEach(p => used.add(p)); if (i.blobId) ras.add(i.blobId); }); for (const k of await DB.keys('photos')) if (!used.has(k)) await DB.del('photos', k); for (const k of await DB.keys('rasters')) if (!ras.has(k)) await DB.del('rasters', k); } catch (e) { }
@@ -1327,6 +1395,8 @@ async function init() {
   const draft = await DB.get('kv', 'recDraft');
   if (draft?.pts?.length) { const ok = await dialog({ title: 'Track sin terminar', text: `Hay una grabación interrumpida con ${draft.pts.length} puntos. ¿Retomarla?`, ok: 'Retomar', cancel: 'Descartar' }); if (ok) { draft.pauseAt = null; startRec(draft); } else DB.del('kv', 'recDraft'); }
   setTimeout(cleanPhotos, 5000);
+  const dis = await DB.get('kv', 'installDismissed'); installDismissed = !!dis && Date.now() - dis < 7 * 864e5; installedHere = !!(await DB.get('kv', 'installedHere')); updateInstallUi();
+  matchMedia('(display-mode: standalone)').addEventListener?.('change', updateInstallUi);
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW', e));
 }
 init();

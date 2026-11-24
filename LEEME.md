@@ -1,4 +1,4 @@
-# FabianApp 1.1 — Libreta de campo geológica
+# FabianApp 1.2 — Libreta de campo geológica
 
 App web instalable (PWA) para exploración: estaciones, datos estructurales medidos con
 la brújula del teléfono, muestras con QA/QC, fotos, tracks GPS y mapas sin señal.
@@ -20,7 +20,10 @@ La app necesita una dirección **https** para que el navegador le dé GPS, brúj
 ## 2. Instalarla en el celular
 
 1. Abre la dirección en **Chrome** (Android).
-2. Menú ⋮ → **Instalar aplicación** (o «Agregar a pantalla principal»).
+2. Toca **Instalar** en el aviso «Instala FabianApp» que aparece arriba
+   (o Más → «Instalar FabianApp»). Si tu navegador no permite instalar directo,
+   la app te muestra los pasos para tu celular; desde un PC te muestra un código QR
+   para abrirla en el teléfono.
 3. Abre FabianApp desde el ícono y acepta los permisos de **ubicación**.
 4. Haz una prueba con señal: navega por tu zona de trabajo y usa el botón de la nube
    para **guardar la zona** (topográfico o satélite) antes de salir a campo.
